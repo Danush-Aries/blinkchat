@@ -1,0 +1,7 @@
+
+> blinkchat@1.0.0 android
+> expo run:android
+
+CommandError: Failed to get properties for device (emulator-5554): Command failed: /Users/dhanush/Library/Android/sdk/platform-tools/adb -s emulator-5554 shell getprop ro.product.cpu.abilist
+adb: device offline
+
