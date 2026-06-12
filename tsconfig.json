@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "esnext",
     "module": "commonjs",
-    "lib": ["es2020"],
+    "lib": ["es2020", "es2021.weakref"],
     "strict": true,
     "jsx": "react-native",
     "esModuleInterop": true,
@@ -10,8 +10,10 @@
     "downlevelIteration": true,
     "moduleResolution": "node",
     "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
   },
-  "include": ["src"],
+  "include": ["src", "App.tsx", "index.ts"],
   "exclude": ["node_modules", "src/**/__tests__", "src/tests"]
 }

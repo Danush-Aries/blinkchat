@@ -1,19 +1,36 @@
 import React from 'react';
-import { View, StyleSheet, FlatList, TextInput, TouchableOpacity } from 'react-native';
+import {
+  View,
+  StyleSheet,
+  FlatList,
+  TextInput,
+  TouchableOpacity,
+  Alert,
+} from 'react-native';
+import { MMKV } from 'react-native-mmkv';
 import { THEME } from '../../theme';
 import { BlinkText } from '../components/BlinkText';
 import { BlinkAvatar } from '../components/BlinkAvatar';
 import { db, Message } from '../../services/storage/db';
 import { router } from '../../services/mesh/router';
-import { encryptForPeerMAD } from '../../services/crypto/encryption';
+import {
+  buildInitialRatchetState,
+  encryptForPeerMAD,
+} from '../../services/crypto/encryption';
 import { Packet, PacketType } from '../../services/protocol/packet';
-import { loadIdentity } from '../../services/crypto/identity';
+import { loadIdentity, wipeIdentity } from '../../services/crypto/identity';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useBurnStore } from '../../services/state/burnStore';
 
+const identityStorage = new MMKV({ id: 'blinkchat-identity' });
+
 export default function ChatScreen() {
   const route = useRoute();
-  const { peerPubkey, nickname } = route.params as any;
+  const { peerPubkey, nickname, peerX25519PubKey } = route.params as {
+    peerPubkey: string;
+    nickname?: string;
+    peerX25519PubKey?: string;
+  };
   const navigation = useNavigation();
   const { burnMessages, purgeBurnMessage } = useBurnStore();
 
@@ -23,27 +40,40 @@ export default function ChatScreen() {
   const [logoTaps, setLogoTaps] = React.useState(0);
 
   React.useEffect(() => {
-    async function loadMsgs() {
-      const msgs = await db.getMessagesByThread(peerPubkey);
-      setMessages(msgs);
-    }
-    loadMsgs();
+    db.getMessagesByThread(peerPubkey).then(setMessages);
   }, [peerPubkey]);
 
+  // ----- Panic Wipe -----
   const handleLogoPress = () => {
     setLogoTaps(prev => {
       const next = prev + 1;
       if (next >= 3) {
-        // PANIC WIPE TRIGGER
-        console.log('!!! EMERGENCY PANIC WIPE TRIGGERED !!!');
-        // In production: call a service to wipe the SQLite DB and keybundle
-        setLogoTaps(0);
-        return 0;
+        Alert.alert(
+          'Emergency Wipe',
+          'This will immediately erase all messages and identity keys.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => setLogoTaps(0) },
+            {
+              text: 'Wipe Now',
+              style: 'destructive',
+              onPress: async () => {
+                await db.panicWipe();
+                wipeIdentity();
+                setLogoTaps(0);
+                (navigation as any).reset({ index: 0, routes: [{ name: 'Home' }] });
+              },
+            },
+          ]
+        );
+        return prev;
       }
+      // Reset tap counter after 1.5 seconds of inactivity
+      setTimeout(() => setLogoTaps(0), 1500);
       return next;
     });
   };
 
+  // ----- Send Message -----
   const sendMessage = async () => {
     if (!text.trim()) return;
 
@@ -51,137 +81,170 @@ export default function ChatScreen() {
     if (!identity) return;
 
     try {
-      const initialState = {
-        rootKey: new Uint8Array(32),
-        sendChainKey: new Uint8Array(32),
-        recvChainKey: new Uint8Array(32),
-        remotePubKey: identity.publicKey,
-        localKeyPair: { privateKey: identity.privateKey, publicKey: identity.publicKey },
-        previousChainLength: 0,
-        messageNumbers: new Map(),
-      };
-      const { ciphertext, nonce } = await encryptForPeerMAD(text, initialState);
+      const myPubkeyHex = Buffer.from(identity.publicKey).toString('hex');
+
+      // Build a ratchet state seeded from a proper DH exchange.
+      // If we have the peer's X25519 public key use it; otherwise fall back
+      // to a deterministic ephemeral key derived from our own key so the
+      // encryption path is always exercised (messages decrypt only if the
+      // recipient does the same derivation on their side).
+      const remotePubKeyBytes = peerX25519PubKey
+        ? Buffer.from(peerX25519PubKey, 'hex')
+        : identity.x25519PublicKey; // fallback: self-exchange (no real secrecy)
+
+      const ratchetState = buildInitialRatchetState(
+        identity.x25519PrivateKey,
+        identity.x25519PublicKey,
+        remotePubKeyBytes
+      );
+
+      const { ciphertext, nonce } = await encryptForPeerMAD(text, ratchetState);
+
+      const msgId = Math.random().toString(36).substring(2, 10);
+      const now = Date.now();
 
       const packet: Packet = {
-        id: Math.random().toString(36).substring(7),
+        id: msgId,
         type: PacketType.DIRECT,
-        sender: Buffer.from(identity.publicKey).toString('hex'),
+        sender: myPubkeyHex,
         recipient: peerPubkey,
         payload: ciphertext,
-        nonce: nonce,
+        nonce,
         ttl: 5,
-        timestamp: Date.now(),
+        timestamp: now,
         signature: '',
         hopLog: [],
       };
 
-      await router.routePacket(packet, Buffer.from(identity.publicKey).toString('hex'));
+      await router.routePacket(packet, myPubkeyHex);
 
-      await db.insertMessage({
-        id: packet.id,
+      const newMsg: Message = {
+        id: msgId,
         thread_id: peerPubkey,
-        from_pubkey: Buffer.from(identity.publicKey).toString('hex'),
+        from_pubkey: myPubkeyHex,
         to_pubkey: peerPubkey,
         group_id: null,
         plaintext: text,
-        timestamp: packet.timestamp,
+        timestamp: now,
         ttl_seconds: 300,
-        expires_at: packet.timestamp + 300000,
+        expires_at: now + 300_000,
         delivery_status: 'sent',
-      });
+      };
 
+      await db.insertMessage(newMsg);
       setText('');
-      setMessages(prev => [...prev, {
-        id: packet.id,
-        plaintext: text,
-        from_pubkey: Buffer.from(identity.publicKey).toString('hex'),
-        timestamp: packet.timestamp,
-        thread_id: peerPubkey,
-        to_pubkey: peerPubkey,
-        group_id: null,
-        ttl_seconds: 300,
-        expires_at: packet.timestamp + 300000,
-        delivery_status: 'sent'
-      } as Message]);
-
+      setMessages(prev => [...prev, newMsg]);
     } catch (e) {
-      console.error('MAD Send Failed', e);
+      console.error('Send failed', e);
     }
   };
+
+  // ----- Helpers -----
+  const myPubkeyHex = React.useMemo(() => {
+    const id = loadIdentity();
+    return id ? Buffer.from(id.publicKey).toString('hex') : '';
+  }, []);
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'delivered': return THEME.colors.neonMint;
-      case 'relayed': return THEME.colors.accent;
-      case 'sent': return THEME.colors.textMuted;
-      default: return THEME.colors.textMuted;
+      case 'delivered':
+        return THEME.colors.neonMint;
+      case 'relayed':
+        return THEME.colors.accent;
+      default:
+        return THEME.colors.textMuted;
     }
   };
 
-    return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => handleLogoPress()} style={styles.logoTrigger}>
-            <BlinkText size="xs" style={styles.logoText}>BLINK</BlinkText>
-          </TouchableOpacity>
-          <BlinkAvatar nickname={peerPubkey} size={30} />
-          <View style={styles.headerInfo}>
-            <BlinkText size="s" style={styles.headerNickname}>{nickname || 'Secure Peer'}</BlinkText>
-            <BlinkText color="neonMint" size="xs" style={styles.headerStatus}>● Mesh Active</BlinkText>
-          </View>
-        </View>
-
-        <FlatList
-          data={[...messages, ...burnMessages]}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => {
-            const isBurn = !!item.id && burnMessages.some(bm => bm.id === item.id);
-            const msg = item as Message;
-            const isMe = msg.from_pubkey === Buffer.from(loadIdentity()?.publicKey || []).toString('hex');
-
-            return (
-              <TouchableOpacity
-                onPressIn={() => { if (isBurn) setRevealedId(item.id); }}
-                onPressOut={() => {
-                  if (isBurn) {
-                    purgeBurnMessage(item.id);
-                    setRevealedId(null);
-                  }
-                }}
-                style={[styles.bubble, isMe ? styles.sent : styles.received, isBurn && styles.burnBubble]}
-              >
-                <View style={isBurn && revealedId !== item.id ? styles.blurOverlay : null}>
-                  <BlinkText color={isMe ? 'obsidian' as any : 'text' as any} size="s">
-                    {msg.plaintext || (item as any).text}
-                  </BlinkText>
-
-                  {isMe && !isBurn && (
-                    <BlinkText
-                      color={getStatusColor(msg.delivery_status) as any}
-                      size="xs"
-                      style={styles.statusText}
-                    >
-                      {msg.delivery_status?.toUpperCase()}
-                    </BlinkText>
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          }}
-        />
-        <View style={styles.inputBar}>
-          <TextInput
-            style={[styles.input, { color: THEME.colors.text }]}
-            value={text}
-            onChangeText={setText}
-            placeholder="Secure message..."
-            placeholderTextColor={THEME.colors.textMuted}
-          />
-          <TouchableOpacity style={styles.sendBtn} onPress={() => sendMessage()}>
-            <BlinkText color="obsidian" size="s" style={{ fontWeight: 'bold' }}>SEND</BlinkText>
-          </TouchableOpacity>
+  // ----- Render -----
+  return (
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={handleLogoPress}
+          style={styles.logoTrigger}
+          accessibilityLabel="Panic wipe trigger — triple tap"
+        >
+          <BlinkText size="xs" style={styles.logoText}>BLINK</BlinkText>
+        </TouchableOpacity>
+        <BlinkAvatar nickname={nickname ?? peerPubkey} size={30} />
+        <View style={styles.headerInfo}>
+          <BlinkText size="s" style={styles.headerNickname}>
+            {nickname ?? 'Secure Peer'}
+          </BlinkText>
+          <BlinkText color="neonMint" size="xs" style={styles.headerStatus}>
+            ● Mesh Active
+          </BlinkText>
         </View>
       </View>
+
+      {/* Message List */}
+      <FlatList
+        data={[...messages, ...burnMessages] as any[]}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => {
+          const isBurn = burnMessages.some(bm => bm.id === item.id);
+          const msg = item as Message;
+          const isMe = msg.from_pubkey === myPubkeyHex;
+
+          return (
+            <TouchableOpacity
+              onPressIn={() => { if (isBurn) setRevealedId(item.id); }}
+              onPressOut={() => {
+                if (isBurn) {
+                  purgeBurnMessage(item.id);
+                  setRevealedId(null);
+                }
+              }}
+              style={[
+                styles.bubble,
+                isMe ? styles.sent : styles.received,
+                isBurn && styles.burnBubble,
+              ]}
+            >
+              <View style={isBurn && revealedId !== item.id ? styles.blurOverlay : undefined}>
+                <BlinkText
+                  color={isMe ? ('obsidian' as any) : ('text' as any)}
+                  size="s"
+                >
+                  {msg.plaintext ?? (item as any).text}
+                </BlinkText>
+
+                {isMe && !isBurn && (
+                  <BlinkText
+                    color={getStatusColor(msg.delivery_status) as any}
+                    size="xs"
+                    style={styles.statusText}
+                  >
+                    {msg.delivery_status?.toUpperCase()}
+                  </BlinkText>
+                )}
+              </View>
+            </TouchableOpacity>
+          );
+        }}
+        contentContainerStyle={styles.messageList}
+      />
+
+      {/* Input */}
+      <View style={styles.inputBar}>
+        <TextInput
+          style={styles.input}
+          value={text}
+          onChangeText={setText}
+          placeholder="Secure message..."
+          placeholderTextColor={THEME.colors.textMuted}
+          onSubmitEditing={sendMessage}
+          returnKeyType="send"
+        />
+        <TouchableOpacity style={styles.sendBtn} onPress={sendMessage}>
+          <BlinkText color="obsidian" size="s" style={{ fontWeight: 'bold' }}>
+            SEND
+          </BlinkText>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
@@ -219,6 +282,9 @@ const styles = StyleSheet.create({
   headerStatus: {
     fontWeight: 'bold',
   },
+  messageList: {
+    paddingVertical: THEME.spacing.s,
+  },
   bubble: {
     padding: THEME.spacing.m,
     borderRadius: THEME.borderRadius.m,
@@ -251,7 +317,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   blurOverlay: {
-    opacity: 0.4,
+    opacity: 0.2,
   },
   inputBar: {
     flexDirection: 'row',

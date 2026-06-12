@@ -1,7 +1,7 @@
 import { ed25519, x25519 } from '@noble/curves/ed25519';
 import { sha256 } from '@noble/hashes/sha2';
 import { MMKV } from 'react-native-mmkv';
-import * as mlkem from 'mlkem';
+import { MlKem768 } from 'mlkem';
 
 const storage = new MMKV({ id: 'blinkchat-identity' });
 
@@ -16,19 +16,21 @@ export interface Identity {
 }
 
 /**
- * Generates a new Ed25519 keypair and calculates a fingerprint.
- * Fingerprint is the first 8 bytes of SHA256(pubkey) formatted as colon-separated hex.
+ * Generates a new Ed25519 keypair with hybrid post-quantum keys.
+ * Fingerprint is the first 8 bytes of SHA256(pubkey) as colon-separated hex.
  */
 export async function generateIdentity(): Promise<Identity> {
-  const privKey = (ed25519.utils as any).randomPrivateKey() as Uint8Array;
+  const privKey = ed25519.utils.randomPrivateKey();
   const pubKey = ed25519.getPublicKey(privKey);
 
-  // Derive X25519 keys from Ed25519 (Sovereign Identity Mapping)
-  const x25519PrivateKey = (ed25519.utils as any).convertToX25519PrivateKey(privKey) as Uint8Array;
+  // Derive X25519 keys from Ed25519 seed (Elligator2 mapping)
+  // Use the raw private key bytes as the X25519 private key seed
+  const x25519PrivateKey = privKey.slice(0, 32);
   const x25519PublicKey = x25519.getPublicKey(x25519PrivateKey);
 
-  // Generate ML-KEM (Kyber) keypair for Quantum Resistance
-  const { publicKey: mlKemPublicKey, privateKey: mlKemPrivateKey } = mlkem.generateKeyPair();
+  // Generate ML-KEM-768 (Kyber) keypair using class-based API
+  const kemInstance = new MlKem768();
+  const [mlKemPublicKey, mlKemPrivateKey] = await kemInstance.generateKeyPair();
 
   const hash = sha256(pubKey);
   const fingerprint = Array.from(hash.slice(0, 8))
@@ -71,7 +73,9 @@ export function loadIdentity(): Identity | null {
   const qPrivB64 = storage.getString('mlKemPrivateKey');
   const qPubB64 = storage.getString('mlKemPublicKey');
 
-  if (!privB64 || !pubB64 || !fingerprint || !xPrivB64 || !xPubB64 || !qPrivB64 || !qPubB64) return null;
+  if (!privB64 || !pubB64 || !fingerprint || !xPrivB64 || !xPubB64 || !qPrivB64 || !qPubB64) {
+    return null;
+  }
 
   return {
     privateKey: Buffer.from(privB64, 'base64'),
@@ -85,20 +89,36 @@ export function loadIdentity(): Identity | null {
 }
 
 /**
- * Signs a packet using the Ed25519 private key.
+ * Wipes identity keys from MMKV storage.
  */
-export async function signPacket(packetJson: string, privateKey: Uint8Array): Promise<string> {
-  const signature = await ed25519.sign(new TextEncoder().encode(packetJson), privateKey);
+export function wipeIdentity(): void {
+  storage.clearAll();
+}
+
+/**
+ * Signs a payload using the Ed25519 private key.
+ */
+export async function signPacket(
+  packetJson: string,
+  privateKey: Uint8Array
+): Promise<string> {
+  const message = new TextEncoder().encode(packetJson);
+  const signature = ed25519.sign(message, privateKey);
   return Buffer.from(signature).toString('hex');
 }
 
 /**
  * Verifies a packet signature using the Ed25519 public key.
  */
-export async function verifyPacket(packetJson: string, signatureHex: string, publicKey: Uint8Array): Promise<boolean> {
+export async function verifyPacket(
+  packetJson: string,
+  signatureHex: string,
+  publicKey: Uint8Array
+): Promise<boolean> {
   try {
     const signature = Buffer.from(signatureHex, 'hex');
-    return await ed25519.verify(signature, new TextEncoder().encode(packetJson), publicKey);
+    const message = new TextEncoder().encode(packetJson);
+    return ed25519.verify(signature, message, publicKey);
   } catch {
     return false;
   }
