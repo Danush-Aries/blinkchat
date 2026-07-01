@@ -1,12 +1,63 @@
 # BlinkChat
 
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+[![Download APK](https://img.shields.io/github/v/release/Danush-Aries/blinkchat?label=Download%20APK&style=for-the-badge&logo=android&color=00ff88)](https://github.com/Danush-Aries/blinkchat/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Danush-Aries/blinkchat/ci.yml?label=CI&style=for-the-badge)](https://github.com/Danush-Aries/blinkchat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
+
+**Privacy-first, serverless, post-quantum mobile messenger.** BLE mesh + optional Tor. No phone number, no email, no cloud.
+
+---
+
+## Install
+
+<table>
+<tr>
+<td width="60%" valign="top">
+
+### Get the APK
+
+1. Tap the **Download APK** badge above (or open [Releases](https://github.com/Danush-Aries/blinkchat/releases/latest)).
+2. Download `app-release.apk` to your Android device.
+3. Enable **Install unknown apps** for your browser / file manager:
+   *Settings → Apps → Special access → Install unknown apps.*
+4. Open the APK and tap **Install**.
+5. Grant Bluetooth + Location permissions on first launch (required for BLE mesh discovery).
+
+### Or scan the QR
+
+Point your phone camera at the QR on the right — it opens the latest release page directly.
+
+### Optional: Tor routing
+
+Install [Orbot](https://guardianproject.info/apps/org.torproject.android/) from F-Droid or Play Store, start it, and enable **Tor mode** in BlinkChat's Settings tab.
+
+</td>
+<td width="40%" valign="top" align="center">
+
+<img src="assets/qr-install.png" alt="Scan to download BlinkChat" width="220" />
+
+<sub>Scan → download latest APK</sub>
+
+</td>
+</tr>
+</table>
+
+---
+
+> ### Security notice
+>
+> BlinkChat is **not distributed through Google Play**. The APK is signed by the developer, not by Google. Android will warn you when you sideload it — this is expected.
+>
+> - Verify the SHA-256 of the APK against the checksum published on each release page.
+> - The app is unaudited experimental software. See [Security Notes](#security-notes) and use it accordingly.
+> - Never sideload builds you did not download from this official Releases page.
+
+---
+
 ![Platform: React Native](https://img.shields.io/badge/Platform-React%20Native-61DAFB.svg?logo=react)
 ![Crypto: Ed25519 + ML-KEM-768](https://img.shields.io/badge/Crypto-Ed25519%20%2B%20ML--KEM--768-blueviolet.svg)
 ![Network: BLE Mesh + Tor](https://img.shields.io/badge/Network-BLE%20Mesh%20%2B%20Tor-darkgreen.svg)
 ![No Servers](https://img.shields.io/badge/Infrastructure-Zero%20Servers-00ff88.svg)
-
-**BlinkChat** is a privacy-first mobile messaging application built with React Native. It communicates over a Bluetooth Low Energy (BLE) mesh network with optional Tor routing. It requires no phone number, no email, and no server — your identity is a cryptographic key pair that lives only on your device.
 
 ---
 
@@ -56,7 +107,7 @@ All messages are encrypted with a hybrid post-quantum scheme: classical X25519 E
 
 ---
 
-## Installation
+## Building From Source
 
 ### Prerequisites
 
@@ -69,7 +120,7 @@ All messages are encrypted with a hybrid post-quantum scheme: classical X25519 E
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-org/blinkchat.git
+git clone https://github.com/Danush-Aries/blinkchat.git
 cd blinkchat
 
 # 2. Install dependencies
@@ -100,6 +151,17 @@ Add the following to `android/app/src/main/AndroidManifest.xml`:
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.INTERNET" />
 ```
+
+### Cutting a Signed Release
+
+See [SIGNING.md](SIGNING.md) for the one-time keystore setup, then:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `android-release` GitHub Actions workflow will build, sign, and attach the APK to a new Release automatically.
 
 ---
 
