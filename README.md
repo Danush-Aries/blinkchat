@@ -69,7 +69,7 @@ All messages are encrypted with a hybrid post-quantum scheme: classical X25519 E
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-org/blinkchat.git
+git clone https://github.com/Danush-Aries/blinkchat.git
 cd blinkchat
 
 # 2. Install dependencies
